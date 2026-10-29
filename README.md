@@ -1,6 +1,6 @@
 # Gemini Live Tweaks
 
-作者：Claude
+作者：D老师
 
 一个只作用于 Google 应用（GSA）的 LSPosed 模块，提供两个 Gemini Live 相关功能：
 
@@ -8,10 +8,6 @@
    Google 的“必须先解锁才能启动 Live”限制，直接进入 Live。
 2. **默认进入 Live**：普通 “Hey Google” 热词唤醒后不再停留在普通语音浮层，
    而是自动进入 Gemini Live。
-
-> 本模块只负责 Live 行为。熄屏 "Hey Google" 的 DSP 热词修复在另一个独立
-> 项目 [hotword-arch-fix](../hotword-arch-fix/) 中；两个模块可以一起安装，
-> 也可以单独使用（单独使用本模块时，亮屏唤醒仍可触发默认 Live）。
 
 ## 功能实现
 
@@ -57,8 +53,7 @@ adb shell su -c 'setprop debug.hotword.live.autoauth 0'
 `autoauth=0` 时锁屏进入 Live 会恢复 Google 原生的“需要解锁”行为；
 `default=0` 时普通唤醒恢复普通 Gemini 语音浮层。
 
-如果之前安装过合并版 `moe.debug.hotwordarch`（包含 Live 钩子），请先禁用/
-卸载旧模块，再安装本模块，避免重复 hook。
+如果你安装过其它包含相同 GSA hook 的旧模块，请先禁用/卸载，避免重复 hook。
 
 从旧版更新本模块后，建议使用：
 
@@ -111,7 +106,14 @@ BUILD_TOOLS=/path/to/build-tools/36.0.0 \
   或禁用模块。
 - **不会真正解锁手机**：锁屏 Live 只是在锁屏之上显示 Live 界面，系统锁屏
   仍然存在，不会改变锁屏密码/指纹。
-- 本模块不包含 DSP 熄屏热词修复；熄屏唤醒需要另外安装
-  [hotword-arch-fix](../hotword-arch-fix/)。
+- 本模块只修改 Gemini Live 的启动与锁屏显示，不修改 SoundTrigger / DSP
+  热词检测本身。
 - 不要在非本人设备或生产环境使用；按现状提供，无任何担保。
 - 本项目与 Google 无关，不包含 Google 的私有授权代码。
+
+## License
+
+本项目代码采用 WTFPL v2 授权，完整文本见 [LICENSE](LICENSE)。
+
+注意：`libs/api-82.jar` 是 Xposed API 82，仍遵循其原始 Apache-2.0
+许可，不适用本项目的 WTFPL。
