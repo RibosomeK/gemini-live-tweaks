@@ -1,67 +1,49 @@
 # Gemini Live Tweaks
 
-作者：D老师
+作者：DeepSeek
 
-一个只作用于 Google 应用（GSA）的 LSPosed 模块，提供两个 Gemini Live 相关功能：
+一个只作用于 Google 应用（GSA）的 LSPosed 模块，提供三个可独立开关的
+Gemini Live 功能：
 
-1. **锁屏进入 Live**：在锁屏/熄屏状态下说 “Hey Google, let's talk”，绕过
-   Google 的“必须先解锁才能启动 Live”限制，直接进入 Live。
-2. **默认进入 Live**：普通 “Hey Google” 热词唤醒后不再停留在普通语音浮层，
-   而是自动进入 Gemini Live。
+1. **锁屏进入 Live**：锁屏/熄屏时说 “Hey Google, let's talk” 时绕过解锁，
+   直接进入 Live。
+2. **默认进入 Live**：普通 “Hey Google” 热词唤醒后直接进入 Live，而不是
+   普通语音浮层。
+3. **结束 Live 后自动退出**：说 “end session” 或点 X 结束 Live 后关闭
+   Gemini，回到桌面或锁屏，而不是停留在聊天界面。
 
-## 功能实现
+## 设置界面
 
-- **锁屏 Live**：GSA 在锁屏时启动 Live 前会先打开
-  `...lockscreen.keyguard.authenticationactivity.AuthenticationActivity`。
-  模块拦截该 Activity 的 `KeyguardManager.requestDismissKeyguard` 调用，
-  伪造 `onDismissSucceeded` 回调，并在短暂窗口内让
-  `isKeyguardLocked`/`isDeviceLocked` 返回 false，使 Live 启动流程继续。
-  同时给 Live 的 `MainActivity` 设置 `showWhenLocked`，让界面显示在锁屏之上。
-  这不会真正解除系统锁屏，也不修改锁屏密码/指纹。
-- **默认 Live**：热词唤醒会先创建 `FloatyActivity`。模块在它创建后直接构造
-  一个带 `RobinRouterArgs$FullScreen$ConversationMode` 的 `MainActivity`
-  Intent 并启动，然后关闭浮层。
+安装后从桌面打开 **Gemini Live Tweaks**，可以单独开关以上三项。配置保存在
+本应用的 SharedPreferences 中，通过导出的只读 Provider 提供给 Google 应用，
+约 1 秒内生效，不需要 Root，也不需要重启。三项功能默认开启。
+
+界面还提供 **隐藏桌面图标** 开关，默认开启。首次打开本应用后桌面图标会隐藏，
+系统会提示添加 “Live 设置” 快捷设置磁贴；之后可从快捷设置磁贴打开本应用。
+如果没有添加，也可以在快捷设置编辑里手动添加。模块本身仍在 LSPosed 中启用
+并勾选 Google 作用域。关闭隐藏开关可以让图标重新显示。
 
 ## 适用环境
 
 - 已安装 LSPosed。
 - Google 应用，测试版本 `17.68.28.ve.arm64`。
-- OnePlus 15R `CPH2769`，OxygenOS `16.0.5.701(EX01)`，Android 16（SDK 36）。
-- GSA 内部类名是混淆的，Google 应用更新后模块可能失效，需要重新适配。
+- OnePlus 15R `CPH2769`，OxygenOS `16.0.5.701(EX01)`，Android 16。
+- GSA 内部类名经过混淆，Google 应用更新后模块可能失效。
 
-## 安装与使用
+## 安装
 
 1. 安装 `build/GeminiLiveTweaks.apk`。
 2. 在 LSPosed 管理器中启用 **Gemini Live Tweaks**。
 3. 作用域只勾选 Google（`com.google.android.googlequicksearchbox`）。
-   本模块不需要 System Framework。
-4. 重启手机或至少重启 Google 应用。
-5. 默认设置下：亮屏或锁屏说 “Hey Google” 应直接进入 Gemini Live
-   （锁屏时 Live 显示在锁屏之上）。若把 `debug.hotword.live.default` 设为 0，
-   则可以用 “Hey Google, let's talk” 测试锁屏 Live 绕过路径。
+4. 重启手机，或至少重启 Google 应用。
+5. 打开模块 App 配置开关。
 
-两项功能默认开启。如需临时关闭（属性重启后失效）：
-
-```bash
-# 默认 Live 关闭；重启后会恢复默认开启
-adb shell su -c 'setprop debug.hotword.live.default 0'
-
-# 锁屏 Live 绕过关闭
-adb shell su -c 'setprop debug.hotword.live.autoauth 0'
-```
-
-`autoauth=0` 时锁屏进入 Live 会恢复 Google 原生的“需要解锁”行为；
-`default=0` 时普通唤醒恢复普通 Gemini 语音浮层。
-
-如果你安装过其它包含相同 GSA hook 的旧模块，请先禁用/卸载，避免重复 hook。
-
-从旧版更新本模块后，建议使用：
+更新模块后请重载目标应用：
 
 ```bash
 adb install --no-incremental -r GeminiLiveTweaks.apk
+adb shell am force-stop com.google.android.googlequicksearchbox
 ```
-
-然后重启 Google 应用（或手机）。
 
 ## 构建
 
@@ -69,11 +51,9 @@ adb install --no-incremental -r GeminiLiveTweaks.apk
 
 - JDK 17+（`javac`、`jar`、`keytool`）
 - Android SDK Platform 36（`android.jar`）
-- Android build-tools，包含 `aapt2`、`d8`、`zipalign`、`apksigner`
+- Android build-tools（`aapt2`、`d8`、`zipalign`、`apksigner`）
 - Python 3
-- 本仓库 `libs/api-82.jar`（Xposed API 82，已包含）
-
-示例：
+- `libs/api-82.jar`（Xposed API 82，已包含）
 
 ```bash
 export JAVA_HOME=/path/to/jdk17
@@ -81,7 +61,7 @@ export ANDROID_HOME=/path/to/Android/Sdk
 ./build.sh
 ```
 
-或直接指定：
+或显式指定工具路径：
 
 ```bash
 ANDROID_JAR=/path/to/android-36/android.jar \
@@ -91,25 +71,18 @@ BUILD_TOOLS=/path/to/build-tools/36.0.0 \
 
 输出：`build/GeminiLiveTweaks.apk`。
 
-仓库内 `keystore/debug.keystore` 是公开调试签名，仅用于保持一致更新签名；
-不要用于正式发布。
+仓库内的调试签名仅用于模块更新一致性，不要用于正式发布。
 
 ## 警告
 
-- **隐私/安全**：本模块绕过了 Google 对锁屏启动 Gemini Live 的限制。
-  锁屏状态下，附近的人可能直接唤起 Live 并与助手交互。请只在你自己的
-  设备上使用，并自行评估隐私和安全风险。
-- **需要 LSPosed**。模块修改 GSA 内部流程，Google 应用更新后可能失效、
-  崩溃或产生未预期的助手行为；升级后请重新测试。
-- **默认 Live 会影响所有热词唤醒**：每次说 “Hey Google” 都会进入 Live，
-  而不是普通一问一答。若不想要此行为，设置 `debug.hotword.live.default=0`
-  或禁用模块。
-- **不会真正解锁手机**：锁屏 Live 只是在锁屏之上显示 Live 界面，系统锁屏
-  仍然存在，不会改变锁屏密码/指纹。
-- 本模块只修改 Gemini Live 的启动与锁屏显示，不修改 SoundTrigger / DSP
+- 锁屏 Live 会让附近的人在锁屏状态下直接唤起 Live 并访问助手功能；请仅在
+  自己的设备上使用，并自行评估隐私风险。
+- 模块修改 GSA 内部流程，Google 应用更新后可能失效、崩溃或行为异常。
+- 默认 Live 会影响所有热词唤醒；不需要时在模块 App 中关闭。
+- 锁屏 Live 不会真正解除系统锁屏，也不修改锁屏密码/指纹。
+- 本模块只修改 Live 的启动、锁屏显示和退出，不修改 SoundTrigger / DSP
   热词检测本身。
-- 不要在非本人设备或生产环境使用；按现状提供，无任何担保。
-- 本项目与 Google 无关，不包含 Google 的私有授权代码。
+- 需要 LSPosed；按现状提供，无任何担保。本项目与 Google 无关。
 
 ## License
 

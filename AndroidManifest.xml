@@ -1,20 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="moe.debug.geminilive"
-    android:versionCode="1"
-    android:versionName="1.0">
+    android:versionCode="3"
+    android:versionName="1.2">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
 
     <application
         android:label="Gemini Live Tweaks"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:hasCode="true">
+        <activity
+            android:name=".SettingsActivity"
+            android:label="Gemini Live Tweaks"
+            android:exported="true" />
+        <activity-alias
+            android:name=".Launcher"
+            android:targetActivity=".SettingsActivity"
+            android:label="Gemini Live Tweaks"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <provider
+            android:name=".SettingsProvider"
+            android:authorities="moe.debug.geminilive.settings"
+            android:exported="true" />
+
+        <service
+            android:name=".SettingsTileService"
+            android:label="Live 设置"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="Start Gemini Live from the lock screen and make plain &quot;Hey Google&quot; wake enter Live (Google app only)." />
+            android:value="Start Gemini Live from the lock screen, make plain &quot;Hey Google&quot; wake enter Live, and exit Gemini after Live ends (Google app only)." />
         <meta-data
             android:name="xposedminversion"
             android:value="93" />

@@ -1,6 +1,7 @@
 package moe.debug.geminilive;
 
 import android.app.Activity;
+import android.app.AndroidAppHelper;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
@@ -9,6 +10,8 @@ import android.os.Looper;
 import android.os.Parcelable;
 import android.os.SystemClock;
 import android.view.WindowManager;
+
+import java.lang.ref.WeakReference;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -20,18 +23,15 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * Gemini Live tweaks for the Google app (GSA), scoped to
  * com.google.android.googlequicksearchbox only.
  *
- * 1. Locked Live: GSA opens a lockscreen AuthenticationActivity before starting
- *    Live. When that activity calls KeyguardManager.requestDismissKeyguard, we
- *    fake the success callback and keep a short "keyguard already dismissed"
- *    window so the Live launch continues. This does not unlock the device.
- * 2. Default Live: when a hotword wake creates the FloatyActivity, instead of
- *    waiting for the user to say "let's talk", we start the Gemini Live
- *    MainActivity directly with a ConversationMode router argument.
+ * - Locked Live: fake the keyguard-dismiss callback for GSA's lockscreen
+ *   AuthenticationActivity and briefly treat the keyguard as dismissed.
+ * - Default Live: launch the Live MainActivity directly when a hotword wake
+ *   creates the FloatyActivity.
+ * - Auto exit: close the Gemini task when LiveService is destroyed (voice
+ *   "end session" and the X/close button both stop it).
  *
- * Both features are enabled by default. Set a system property to "0" to turn
- * one off (temporary; properties reset after reboot):
- *   debug.hotword.live.default=0
- *   debug.hotword.live.autoauth=0
+ * Settings are stored in Config.PATH and can be changed from the module app.
+ * Features default to enabled when the file is missing.
  *
  * Tested on: OnePlus 15R (CPH2769), OxygenOS 16.0.5.701, Android 16,
  * Google app 17.68.28.ve.arm64.
@@ -47,17 +47,27 @@ public final class LiveFix implements IXposedHookLoadPackage {
     private static final String AUTH_ACTIVITY =
             "com.google.android.apps.search.assistant.surfaces.voice.lockscreen.keyguard"
                     + ".authenticationactivity.AuthenticationActivity";
+    private static final String LIVE_SERVICE =
+            "com.google.android.apps.search.assistant.surfaces.voice.robin.ui"
+                    + ".conversationmode.service.LiveService";
     private static final String ROUTER_ARGS_CONVERSATION_MODE =
             "com.google.android.apps.search.assistant.surfaces.voice.robin.routing"
                     + ".RobinRouterArgs$FullScreen$ConversationMode";
 
-    private static final String PROP_DEFAULT_LIVE = "debug.hotword.live.default";
-    private static final String PROP_AUTO_AUTH = "debug.hotword.live.autoauth";
     private static final long SPOOF_MS = 10000L;
+    private static final long CONFIG_REFRESH_MS = 1000L;
 
     private static volatile long spoofUntil = 0L;
+    private static volatile long liveStartedAt = 0L;
     private static volatile boolean liveActive = false;
+    private static volatile boolean exitScheduled = false;
+    private static volatile WeakReference<Activity> liveActivity = new WeakReference<>(null);
     private static volatile ClassLoader gsaLoader;
+
+    private static volatile long configCheckedAt = 0L;
+    private static volatile boolean cfgDefaultLive = true;
+    private static volatile boolean cfgAutoAuth = true;
+    private static volatile boolean cfgAutoExit = true;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
@@ -67,31 +77,30 @@ public final class LiveFix implements IXposedHookLoadPackage {
         gsaLoader = lp.classLoader;
         hookActivities(lp.classLoader);
         hookKeyguard(lp.classLoader);
-        XposedBridge.log(TAG + "hooks installed in " + lp.processName);
+        hookLiveService(lp.classLoader);
+        XposedBridge.log(TAG + "active in " + lp.processName);
     }
 
     private static void hookActivities(ClassLoader cl) {
         try {
             Class<?> activityClass = XposedHelpers.findClass("android.app.Activity", cl);
 
-            // Set the window flag before the app's onCreate so the keyguard does
-            // not occlude the Live window.
             XposedBridge.hookAllMethods(activityClass, "onCreate", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     try {
-                        Activity a = (Activity) param.thisObject;
-                        if (!a.getClass().getName().contains(MAIN_ACTIVITY)) {
+                        Activity activity = (Activity) param.thisObject;
+                        if (!activity.getClass().getName().contains(MAIN_ACTIVITY)) {
                             return;
                         }
-                        if (!isLiveIntent(a.getIntent())) {
+                        if (!isLiveIntent(activity.getIntent())) {
                             return;
                         }
                         if (!defaultLiveEnabled() && !autoAuthEnabled()) {
                             return;
                         }
                         spoofUntil = SystemClock.uptimeMillis() + SPOOF_MS;
-                        setShowWhenLocked(a);
+                        setShowWhenLocked(activity);
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + "early showWhenLocked failed: " + t);
                     }
@@ -102,12 +111,14 @@ public final class LiveFix implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     try {
-                        Activity a = (Activity) param.thisObject;
-                        String name = a.getClass().getName();
+                        Activity activity = (Activity) param.thisObject;
+                        String name = activity.getClass().getName();
                         if (name.contains(MAIN_ACTIVITY)) {
-                            maybeShowOverKeyguard(a, a.getIntent());
+                            liveActivity = new WeakReference<>(activity);
+                            exitScheduled = false;
+                            maybeShowOverKeyguard(activity, activity.getIntent());
                         } else if (name.contains(FLOATY_ACTIVITY)) {
-                            maybeAutoLive(a, a.getIntent());
+                            maybeAutoLive(activity, activity.getIntent());
                         }
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + "onCreate handling failed: " + t);
@@ -119,16 +130,21 @@ public final class LiveFix implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     try {
-                        Activity a = (Activity) param.thisObject;
-                        if (!a.getClass().getName().contains(MAIN_ACTIVITY)) {
+                        Activity activity = (Activity) param.thisObject;
+                        if (!activity.getClass().getName().contains(MAIN_ACTIVITY)) {
                             return;
                         }
-                        Intent it = param.args.length > 0 && param.args[0] instanceof Intent
-                                ? (Intent) param.args[0] : a.getIntent();
-                        if (isLiveIntent(it)) {
+                        Intent intent = param.args.length > 0 && param.args[0] instanceof Intent
+                                ? (Intent) param.args[0] : activity.getIntent();
+                        if (isLiveIntent(intent)) {
+                            if (!liveActive) {
+                                liveStartedAt = SystemClock.uptimeMillis();
+                            }
                             liveActive = true;
+                            liveActivity = new WeakReference<>(activity);
+                            exitScheduled = false;
                         }
-                        maybeShowOverKeyguard(a, it);
+                        maybeShowOverKeyguard(activity, intent);
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + "onNewIntent handling failed: " + t);
                     }
@@ -139,15 +155,19 @@ public final class LiveFix implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     try {
-                        Activity a = (Activity) param.thisObject;
-                        if (!a.getClass().getName().contains(MAIN_ACTIVITY)) {
+                        Activity activity = (Activity) param.thisObject;
+                        if (!activity.getClass().getName().contains(MAIN_ACTIVITY)) {
                             return;
                         }
-                        Intent it = a.getIntent();
-                        if (isLiveIntent(it)) {
+                        Intent intent = activity.getIntent();
+                        if (isLiveIntent(intent)) {
+                            if (!liveActive) {
+                                liveStartedAt = SystemClock.uptimeMillis();
+                            }
                             liveActive = true;
+                            liveActivity = new WeakReference<>(activity);
                         }
-                        maybeShowOverKeyguard(a, it);
+                        maybeShowOverKeyguard(activity, intent);
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + "onResume handling failed: " + t);
                     }
@@ -157,8 +177,8 @@ public final class LiveFix implements IXposedHookLoadPackage {
             XposedBridge.hookAllMethods(activityClass, "onPause", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    Activity a = (Activity) param.thisObject;
-                    if (a.getClass().getName().contains(MAIN_ACTIVITY)) {
+                    Activity activity = (Activity) param.thisObject;
+                    if (activity.getClass().getName().contains(MAIN_ACTIVITY)) {
                         liveActive = false;
                     }
                 }
@@ -175,17 +195,13 @@ public final class LiveFix implements IXposedHookLoadPackage {
             }
             int trigger = floatyIntent == null ? -1
                     : floatyIntent.getIntExtra("triggerType", -1);
-            if (trigger != 3) {
-                return;
-            }
-            if (liveActive) {
+            if (trigger != 3 || liveActive) {
                 return;
             }
             new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     if (activity.isFinishing() || activity.isDestroyed()) {
-                        XposedBridge.log(TAG + "auto-Live skipped: Floaty is finishing");
                         return;
                     }
                     try {
@@ -193,7 +209,6 @@ public final class LiveFix implements IXposedHookLoadPackage {
                         spoofUntil = SystemClock.uptimeMillis() + SPOOF_MS;
                         activity.startActivity(live);
                         activity.finish();
-                        XposedBridge.log(TAG + "auto-Live launched");
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + "auto-Live failed: " + t);
                     }
@@ -301,7 +316,6 @@ public final class LiveFix implements IXposedHookLoadPackage {
                             public void run() {
                                 try {
                                     XposedHelpers.callMethod(callback, "onDismissSucceeded");
-                                    XposedBridge.log(TAG + "faked keyguard dismissal for Live");
                                 } catch (Throwable t) {
                                     XposedBridge.log(TAG + "keyguard callback failed: " + t);
                                 }
@@ -309,7 +323,7 @@ public final class LiveFix implements IXposedHookLoadPackage {
                         });
                         param.setResult(null);
                     } catch (Throwable t) {
-                        XposedBridge.log(TAG + "keyguard requestDismiss handling failed: " + t);
+                        XposedBridge.log(TAG + "keyguard handling failed: " + t);
                     }
                 }
             });
@@ -318,26 +332,102 @@ public final class LiveFix implements IXposedHookLoadPackage {
         }
     }
 
+    private static void hookLiveService(ClassLoader cl) {
+        try {
+            Class<?> liveService = XposedHelpers.findClass(LIVE_SERVICE, cl);
+            XposedBridge.hookAllMethods(liveService, "onDestroy", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    handleLiveEnded();
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "LiveService hook failed: " + t);
+        }
+    }
+
+    private static void handleLiveEnded() {
+        try {
+            if (!autoExitEnabled() || !liveActive) {
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (liveStartedAt != 0L && now - liveStartedAt < 1000L) {
+                return;
+            }
+            if (exitScheduled) {
+                return;
+            }
+            final Activity activity = liveActivity.get();
+            if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+                return;
+            }
+            exitScheduled = true;
+            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (!activity.isFinishing() && !activity.isDestroyed()) {
+                            activity.finishAndRemoveTask();
+                        }
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + "auto-exit failed: " + t);
+                    }
+                }
+            }, 350L);
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "auto-exit handling failed: " + t);
+        }
+    }
+
     private static boolean isLiveIntent(Intent intent) {
         Bundle extras = intent == null ? null : intent.getExtras();
         return extras != null && extras.containsKey("robin_router_args");
     }
 
+    private static void refreshConfig() {
+        long now = SystemClock.uptimeMillis();
+        if (now - configCheckedAt < CONFIG_REFRESH_MS) {
+            return;
+        }
+        configCheckedAt = now;
+        boolean defaultLive = Config.DEFAULT_ENABLED;
+        boolean autoAuth = Config.DEFAULT_ENABLED;
+        boolean autoExit = Config.DEFAULT_ENABLED;
+        try {
+            android.app.Application app = AndroidAppHelper.currentApplication();
+            if (app != null) {
+                Bundle values = app.getContentResolver().call(
+                        Config.CONTENT_URI, "get", null, null);
+                if (values != null) {
+                    defaultLive = values.getBoolean(
+                            Config.KEY_DEFAULT_LIVE, Config.DEFAULT_ENABLED);
+                    autoAuth = values.getBoolean(
+                            Config.KEY_AUTO_AUTH, Config.DEFAULT_ENABLED);
+                    autoExit = values.getBoolean(
+                            Config.KEY_AUTO_EXIT, Config.DEFAULT_ENABLED);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Provider unavailable: keep the defaults (all enabled).
+        }
+        cfgDefaultLive = defaultLive;
+        cfgAutoAuth = autoAuth;
+        cfgAutoExit = autoExit;
+    }
+
     private static boolean defaultLiveEnabled() {
-        return !"0".equals(readProp(PROP_DEFAULT_LIVE));
+        refreshConfig();
+        return cfgDefaultLive;
     }
 
     private static boolean autoAuthEnabled() {
-        return !"0".equals(readProp(PROP_AUTO_AUTH));
+        refreshConfig();
+        return cfgAutoAuth;
     }
 
-    private static String readProp(String name) {
-        try {
-            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
-            Object value = XposedHelpers.callStaticMethod(sp, "get", name, "");
-            return value == null ? "" : value.toString();
-        } catch (Throwable t) {
-            return "";
-        }
+    private static boolean autoExitEnabled() {
+        refreshConfig();
+        return cfgAutoExit;
     }
 }
