@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="moe.debug.geminilive"
-    android:versionCode="3"
-    android:versionName="1.2">
+    android:versionCode="4"
+    android:versionName="1.3">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
 
@@ -13,7 +13,13 @@
         <activity
             android:name=".SettingsActivity"
             android:label="Gemini Live Tweaks"
-            android:exported="true" />
+            android:exported="true">
+            <!-- Lets LSPosed Manager show its "module settings" launch button. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
         <activity-alias
             android:name=".Launcher"
             android:targetActivity=".SettingsActivity"
@@ -30,16 +36,6 @@
             android:name=".SettingsProvider"
             android:authorities="moe.debug.geminilive.settings"
             android:exported="true" />
-
-        <service
-            android:name=".SettingsTileService"
-            android:label="Live 设置"
-            android:exported="true"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
-            <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE" />
-            </intent-filter>
-        </service>
 
         <meta-data
             android:name="xposedmodule"

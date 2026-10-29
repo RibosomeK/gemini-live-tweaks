@@ -1,12 +1,10 @@
 package moe.debug.geminilive;
 
 import android.app.Activity;
-import android.app.StatusBarManager;
 import android.content.ComponentName;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
-import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
@@ -25,7 +23,6 @@ import android.widget.TextView;
  */
 public class SettingsActivity extends Activity {
     private static final String LAUNCHER_ALIAS = "moe.debug.geminilive.Launcher";
-    private static final String KEY_TILE_PROMPTED = "tile_prompted";
 
     private SharedPreferences prefs;
     private Switch defaultLiveSwitch;
@@ -71,22 +68,20 @@ public class SettingsActivity extends Activity {
         defaultLiveSwitch = addSwitch(root, "默认进入 Live",
                 "普通 “Hey Google” 热词唤醒后直接进入 Gemini Live。");
         autoAuthSwitch = addSwitch(root, "锁屏进入 Live",
-                "锁屏/熄屏时说 “Hey Google, let's talk” 时绕过解锁，直接进入 Live。");
+                "允许锁屏/熄屏时直接进入 Live；关闭后锁屏唤醒不会绕过解锁，"
+                        + "即使“默认进入 Live”已开启。");
         autoExitSwitch = addSwitch(root, "结束 Live 后自动退出",
                 "说 “end session” 或点 X 结束 Live 后关闭 Gemini，回到桌面或锁屏。");
         hideIconSwitch = addSwitch(root, "隐藏桌面图标",
-                "默认隐藏。关闭后图标会重新出现在桌面；隐藏后可从快捷设置的"
-                        + "“Live 设置”磁贴打开本应用，首次隐藏会提示添加磁贴。");
+                "默认隐藏。关闭后图标会重新出现在桌面；隐藏后仍可从 LSPosed"
+                        + " 管理器的本模块页面右下角悬浮按钮打开本设置。");
 
         status = text("正在读取配置…", 13, false);
         status.setTextColor(0xFF666666);
         status.setPadding(0, dp(16), 0, 0);
         root.addView(status);
 
-        TextView note = text(
-                "模块可在 LSPosed 中启用并勾选 Google 作用域。隐藏桌面图标后，使用"
-                        + "快捷设置中的“Live 设置”磁贴打开本设置；配置保存在本应用内，"
-                        + "重启后保留。",
+        TextView note = text("模块需在 LSPosed 中启用，并只勾选 Google 作用域。",
                 12, false);
         note.setTextColor(0xFF888888);
         note.setPadding(0, dp(12), 0, 0);
@@ -167,8 +162,7 @@ public class SettingsActivity extends Activity {
         loading = false;
 
         applyIconVisibility(hideIcon);
-        maybeRequestTile(hideIcon);
-        updateStatus(hideIcon);
+        updateStatus(hideIcon, false);
     }
 
     private void saveSettings() {
@@ -183,8 +177,7 @@ public class SettingsActivity extends Activity {
                 .putBoolean(Config.KEY_HIDE_ICON, hideIcon)
                 .apply();
         applyIconVisibility(hideIcon);
-        maybeRequestTile(hideIcon);
-        updateStatus(hideIcon);
+        updateStatus(hideIcon, true);
     }
 
     private void applyIconVisibility(boolean hide) {
@@ -196,35 +189,8 @@ public class SettingsActivity extends Activity {
                 alias, state, PackageManager.DONT_KILL_APP);
     }
 
-    private void maybeRequestTile(boolean hide) {
-        if (!hide || Build.VERSION.SDK_INT < 33) {
-            return;
-        }
-        if (prefs.getBoolean(KEY_TILE_PROMPTED, false)) {
-            return;
-        }
-        StatusBarManager manager = getSystemService(StatusBarManager.class);
-        if (manager == null) {
-            return;
-        }
-        prefs.edit().putBoolean(KEY_TILE_PROMPTED, true).apply();
-        try {
-            manager.requestAddTileService(
-                    new ComponentName(this, SettingsTileService.class),
-                    "Live 设置",
-                    Icon.createWithResource(this, android.R.drawable.ic_btn_speak_now),
-                    getMainExecutor(),
-                    result -> {
-                    });
-        } catch (Throwable ignored) {
-            // The user can still add the tile manually in Quick Settings.
-        }
-    }
-
-    private void updateStatus(boolean hideIcon) {
-        String iconStatus = hideIcon
-                ? "桌面图标已隐藏；可从快捷设置的 “Live 设置” 磁贴打开本应用。"
-                : "桌面图标已显示。";
-        status.setText("配置已保存，约 1 秒内同步到 Google 应用。\n" + iconStatus);
+    private void updateStatus(boolean hideIcon, boolean saved) {
+        status.setText((saved ? "配置已保存。" : "配置已载入。")
+                + (hideIcon ? "桌面图标已隐藏。" : "桌面图标已显示。"));
     }
 }

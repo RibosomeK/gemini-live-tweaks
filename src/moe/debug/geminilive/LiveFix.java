@@ -2,6 +2,7 @@ package moe.debug.geminilive;
 
 import android.app.Activity;
 import android.app.AndroidAppHelper;
+import android.app.KeyguardManager;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
@@ -30,8 +31,12 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * - Auto exit: close the Gemini task when LiveService is destroyed (voice
  *   "end session" and the X/close button both stop it).
  *
- * Settings are stored in Config.PATH and can be changed from the module app.
- * Features default to enabled when the file is missing.
+ * All lock-screen handling is gated by the "锁屏进入 Live" switch. With it
+ * off, a locked hotword wake stays on the native, unlock-requiring path even
+ * when "默认进入 Live" is on.
+ *
+ * Settings are stored in the module app and exposed by SettingsProvider.
+ * Features default to enabled when the setting is missing.
  *
  * Tested on: OnePlus 15R (CPH2769), OxygenOS 16.0.5.701, Android 16,
  * Google app 17.68.28.ve.arm64.
@@ -96,7 +101,7 @@ public final class LiveFix implements IXposedHookLoadPackage {
                         if (!isLiveIntent(activity.getIntent())) {
                             return;
                         }
-                        if (!defaultLiveEnabled() && !autoAuthEnabled()) {
+                        if (!autoAuthEnabled()) {
                             return;
                         }
                         spoofUntil = SystemClock.uptimeMillis() + SPOOF_MS;
@@ -198,15 +203,23 @@ public final class LiveFix implements IXposedHookLoadPackage {
             if (trigger != 3 || liveActive) {
                 return;
             }
+            if (!autoAuthEnabled() && isLocked(activity)) {
+                return;
+            }
             new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     if (activity.isFinishing() || activity.isDestroyed()) {
                         return;
                     }
+                    if (!autoAuthEnabled() && isLocked(activity)) {
+                        return;
+                    }
                     try {
                         Intent live = buildLiveIntent(activity, floatyIntent);
-                        spoofUntil = SystemClock.uptimeMillis() + SPOOF_MS;
+                        if (autoAuthEnabled()) {
+                            spoofUntil = SystemClock.uptimeMillis() + SPOOF_MS;
+                        }
                         activity.startActivity(live);
                         activity.finish();
                     } catch (Throwable t) {
@@ -248,10 +261,7 @@ public final class LiveFix implements IXposedHookLoadPackage {
 
     private static void maybeShowOverKeyguard(Activity activity, Intent intent) {
         try {
-            if (!defaultLiveEnabled() && !autoAuthEnabled()) {
-                return;
-            }
-            if (!isLiveIntent(intent)) {
+            if (!autoAuthEnabled() || !isLiveIntent(intent)) {
                 return;
             }
             // Keep treating the device as unlocked while Live is on screen.
@@ -259,6 +269,16 @@ public final class LiveFix implements IXposedHookLoadPackage {
             setShowWhenLocked(activity);
         } catch (Throwable t) {
             XposedBridge.log(TAG + "showWhenLocked failed: " + t);
+        }
+    }
+
+    private static boolean isLocked(Activity activity) {
+        try {
+            KeyguardManager manager = activity.getSystemService(KeyguardManager.class);
+            return manager != null
+                    && (manager.isKeyguardLocked() || manager.isDeviceLocked());
+        } catch (Throwable t) {
+            return false;
         }
     }
 
@@ -282,7 +302,8 @@ public final class LiveFix implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) {
                         try {
                             if (Boolean.TRUE.equals(param.getResult())
-                                    && SystemClock.uptimeMillis() < spoofUntil) {
+                                    && SystemClock.uptimeMillis() < spoofUntil
+                                    && autoAuthEnabled()) {
                                 param.setResult(false);
                             }
                         } catch (Throwable t) {
